@@ -1,13 +1,13 @@
 # 07 — Plan de Implementación (Arquitectura de Bajo Costo)
 
-> Objetivo: llegar a un MVP en producción con **costo de infraestructura ≈ $0/mes** mientras el negocio no tiene tráfico relevante, sin comprometer la arquitectura ya decidida en [01-arquitectura.md](./01-arquitectura.md) (single DB + `tenant_id`, GCP Cloud Run + Firebase Hosting). El plan avanza por fases; cada fase termina en un estado desplegable y usable, no en código a medio terminar.
+> Objetivo: llegar a un MVP en producción con **costo de infraestructura ≈ $0/mes** mientras el negocio no tiene tráfico relevante, sin comprometer la arquitectura ya decidida en [01-arquitectura.md](./01-arquitectura.md) (Cloud Firestore Native Mode + subcolección por tenant, GCP Cloud Run + Firebase Hosting — todo dentro de un único proyecto GCP). El plan avanza por fases; cada fase termina en un estado desplegable y usable, no en código a medio terminar.
 
 ---
 
 ## 7.1 Principios del enfoque de bajo costo
 
 1. **Todo serverless / scale-to-zero.** Nada corre (ni cobra) cuando nadie lo usa. Cloud Run y Firebase Hosting ya cumplen esto por defecto; se evita cualquier componente con costo fijo mensual (VM siempre encendida, cluster dedicado, Redis administrado, etc.).
-2. **Un solo cluster Mongo compartido (ya decidido).** El patrón single-DB + `tenant_id` de [01-arquitectura.md §1.1](./01-arquitectura.md#11-decisión-de-arquitectura-de-tenancy) encaja perfecto con el tier gratuito de MongoDB Atlas (M0): un negocio nuevo no implica un cluster nuevo.
+2. **Un solo proyecto Firestore, sin cuenta externa que administrar.** El patrón subcolección-por-tenant de [01-arquitectura.md §1.1](./01-arquitectura.md#11-decisión-de-arquitectura-de-tenancy) vive en el mismo proyecto GCP que Cloud Run: no hay un Atlas/cluster externo que dar de alta, ni connection string que rotar, ni whitelist de IP — un negocio nuevo es simplemente un documento nuevo en `tenants/`, autenticado vía IAM.
 3. **Diferir todo lo que tenga costo variable por uso** (SMS/WhatsApp, email transaccional de alto volumen) a fases posteriores, y mientras tanto usar el equivalente gratuito de menor escala (SMTP gratuito, Cloud Scheduler free tier).
 4. **No pagar por observabilidad/CI dedicada.** Logs nativos de Cloud Run + GitHub Actions (minutos gratuitos) son suficientes hasta que haya ingresos que justifiquen herramientas pagas.
 5. **Definir triggers explícitos de upgrade**, no fechas. Se sube de tier cuando se toca un límite real (ver tabla 7.2), nunca por anticipación especulativa.
@@ -18,7 +18,7 @@
 
 | Componente | Elección MVP ($0) | Límite del free tier | Trigger de upgrade |
 |---|---|---|---|
-| Base de datos | **MongoDB Atlas M0** (shared, 512 MB) | 512 MB almacenamiento, conexiones limitadas, sin backups automáticos | Acercarse a 400 MB usados, o necesitar backups point-in-time → subir a M10 (~$9-60/mes según región) |
+| Base de datos | **Cloud Firestore Native Mode** (Spark plan, mismo proyecto GCP) | 1 GiB almacenamiento, 50K lecturas/día, 20K escrituras/día, 20K borrados/día — **free tier permanente, sin fecha de expiración** | Acercarse sostenidamente a cualquiera de los cupos diarios → plan **Blaze** (pago por uso desde el primer GiB/operación extra, sigue siendo centavos a la escala de un piloto) |
 | Backend | **Cloud Run** (contenedor FastAPI), min instances = 0 | 2M requests/mes, 360.000 GB-seg, 180.000 vCPU-seg gratis/mes | Tráfico sostenido que agote el free tier, o necesidad de `min_instances ≥ 1` para evitar cold start en horario pico |
 | Frontend | **Firebase Hosting** (Spark plan) | 10 GB almacenamiento, 360 MB/día de transferencia | Transferencia diaria sostenida cerca del límite → plan Blaze (pago por uso, sigue siendo barato) |
 | Email transaccional | **SMTP gratuito** (Brevo/Sendinblue free: 300 emails/día, o Gmail SMTP para desarrollo) | 300 emails/día (Brevo) | Superar 300 emails/día reales → plan pago de Brevo/SendGrid (~$15-25/mes) |
@@ -26,9 +26,9 @@
 | SMS / WhatsApp | **Diferido a Fase 4** (no se implementa en MVP) | — | Cuando el negocio piloto lo pida explícitamente y esté dispuesto a absorber costo variable (Twilio/similar, RF-NOT-006) |
 | CI/CD | **GitHub Actions** (repo privado: 2.000 min/mes gratis) | 2.000 min/mes | Build/test muy lento o múltiples pipelines → optimizar cache antes de pagar |
 | Dominio propio | Subdominio gratuito de Firebase Hosting (`agendix.web.app`) hasta tener negocio piloto confirmado | — | Confirmar primer negocio piloto → comprar dominio (`agendix.app`, costo anual bajo, único gasto real del MVP) |
-| Monitoreo | Logs de Cloud Run + panel de Atlas (incluidos) | — | Necesidad de alertas proactivas → recién ahí evaluar herramienta paga |
+| Monitoreo | Logs de Cloud Run + panel de uso de Firestore (incluidos, mismo proyecto GCP) | — | Necesidad de alertas proactivas → recién ahí evaluar herramienta paga |
 
-**Costo estimado Fase 0-3 (MVP sin tráfico real): $0/mes** (excepto, opcionalmente, el dominio propio si se compra antes de tener el primer cliente).
+**Costo estimado Fase 0-3 (MVP sin tráfico real): $0/mes**, sin siquiera crear una cuenta o secreto fuera del proyecto GCP (excepto, opcionalmente, el dominio propio si se compra antes de tener el primer cliente).
 
 ---
 
@@ -36,14 +36,15 @@
 
 ### Fase 0 — Bootstrap de infraestructura y repos (0.5-1 semana)
 
-- [ ] Crear cluster **MongoDB Atlas M0** (`agendix_db`), whitelist de IP abierta a Cloud Run (0.0.0.0/0 + usuario/password fuerte, dado que Atlas M0 no soporta VPC peering).
-- [ ] Crear proyecto GCP, habilitar Cloud Run + Artifact Registry, y **configurar alerta de presupuesto** (ej. $5) para detectar cualquier desvío del free tier de inmediato.
-- [ ] Crear proyecto Firebase (Spark plan) para Hosting.
+- [ ] Crear proyecto GCP, habilitar Cloud Run + Artifact Registry + **Cloud Firestore en Native Mode** (mismo proyecto — no requiere cuenta externa), y **configurar alerta de presupuesto** (ej. $5) para detectar cualquier desvío del free tier de inmediato.
+- [ ] Crear/vincular proyecto Firebase (Spark plan) sobre el mismo proyecto GCP, para Hosting **y** para el CLI de Firestore (`firestore.rules`, `firestore.indexes.json`, emulador).
+- [ ] Declarar `firestore.rules` (backstop, ver [01-arquitectura.md §1.3](./01-arquitectura.md#reglas-de-seguridad-firestore-security-rules)) y `firestore.indexes.json` con los índices compuestos iniciales ([01-arquitectura.md §1.3](./01-arquitectura.md#índices-compuestos-requeridos-firestoreindexesjson)); desplegar con `firebase deploy --only firestore`.
+- [ ] Crear la Service Account que usará Cloud Run con rol `roles/datastore.user` (mínimo privilegio necesario para el Admin SDK) — no se maneja ningún secreto de conexión.
 - [ ] Bootstrap del backend siguiendo el árbol de [01-arquitectura.md §1.6](./01-arquitectura.md#16-estructura-de-directorios-del-backend) + extensiones de [06-trazabilidad.md §6.2](./06-trazabilidad.md#62-componentes-nuevos-requeridos-no-listados-en-el-árbol-original-de-backendagendix).
 - [ ] Bootstrap del frontend Angular 20 con `NovexAgendixPreset` ([01-arquitectura.md §1.7](./01-arquitectura.md#17-frontend-angular-20--primeng)).
-- [ ] `docker-compose.yml` local (backend + Mongo local para desarrollo, **no** contra Atlas, para no gastar conexiones del free tier en dev).
+- [ ] `docker-compose.yml` local (backend + **Firestore Emulator**, vía `firebase emulators:start --only firestore` o imagen equivalente, con `FIRESTORE_EMULATOR_HOST` apuntando al contenedor — desarrollo 100% offline y gratuito, sin tocar el proyecto real).
 - [ ] `release.py` apuntando al proyecto GCP/Firebase reales; primer despliegue "hola mundo" para validar el pipeline completo antes de escribir lógica de negocio.
-- [ ] GitHub Actions: lint + `pytest` + `tsc --noEmit` en cada PR.
+- [ ] GitHub Actions: lint + `pytest` (contra el emulador, levantado como servicio del job) + `tsc --noEmit` en cada PR.
 
 **Criterio de salida:** un `GET /health` responde en producción desde Cloud Run, y el frontend vacío carga desde Firebase Hosting.
 
@@ -60,7 +61,7 @@ Implementa el núcleo de valor: RF del módulo `AGE` + `TEN` básicos ([03-reque
 - [ ] `appointment_service.py` + `appointment_repository.py` con validación de solapamiento (RF-AGE-023, RF-AGE-024).
 - [ ] Router público `/public/{tenant_slug}/...` (RF-AGE-020, 021) + página Angular `/:tenantSlug/reservar`.
 - [ ] Estados de cita y transiciones (RF-AGE-030 a 034), sin el otorgamiento de puntos todavía (eso es Fase 3).
-- [ ] Índices de Mongo de [01-arquitectura.md §1.3](./01-arquitectura.md#13-índices-mongodb-por-colección) creados al startup.
+- [ ] Índices compuestos de [01-arquitectura.md §1.3](./01-arquitectura.md#índices-compuestos-requeridos-firestoreindexesjson) desplegados (`firebase deploy --only firestore:indexes`) antes de exponer el endpoint público — una query sin su índice compuesto falla en runtime, no en tiempo de compilación.
 - [ ] `test_availability.py`, `test_multitenancy.py` (RNF-SEC-003, RNF-OBS-003) — no avanzar a Fase 2 sin estos tests en verde.
 - [ ] Deploy a Cloud Run con `min_instances = 0` (acepta cold start de MVP; ver 7.2 para el trigger de upgrade).
 
@@ -89,7 +90,7 @@ RF de los módulos `CRM` y `LOY` ([03-requerimientos-funcionales.md §3.3, §3.5
 - [ ] `client_service.py` + `admin/clients.py` — historial de citas, servicios contratados (RF-CRM-001, 002).
 - [ ] `client_note.py` / `client_note_repository.py` — notas privadas con flag `is_sensitive` y RBAC reforzado (RF-CRM-004 a 006, RNF-SEC-006).
 - [ ] `loyalty_account.py`, `loyalty_transaction.py`, `reward.py`, `redemption.py` + repos correspondientes.
-- [ ] `loyalty_service.py`: otorgamiento idempotente al completar cita (RF-LOY-020, índice único `sparse` sobre `appointment_id`), canje atómico (`find_one_and_update`, RF-LOY-012/014).
+- [ ] `loyalty_service.py`: otorgamiento idempotente al completar cita (RF-LOY-020, ID determinístico `appt_{appointment_id}` + `create()`), canje atómico (transacción Firestore, RF-LOY-012/014) — ver [06-trazabilidad.md §6.3](./06-trazabilidad.md#63-nuevas-subcolecciones-requeridas-módulo-loy).
 - [ ] UI de configuración de mecánica de recompensas para `business_admin` (RF-LOY-001 a 004) y catálogo de premios (RF-LOY-010).
 - [ ] UI de saldo/canje para `client` (RF-LOY-011, 022).
 - [ ] Exportación CSV de clientes (RF-CRM-008) verificando que excluye `client_notes` por diseño (mitigación de riesgo ya documentada en [06-trazabilidad.md §6.5](./06-trazabilidad.md#65-riesgos-técnicos-identificados)).
@@ -118,7 +119,7 @@ No se ejecuta por calendario sino **cuando se dispara alguno de los triggers de 
 
 | Señal observada | Acción de escalamiento |
 |---|---|
-| Atlas M0 > ~80% de 512 MB | Migrar a M10 (primer tier pago), sin cambio de esquema (ya previsto en RNF-ESC-001) |
+| Firestore > ~80% de 1 GiB, o cerca del cupo diario de lecturas/escrituras | Pasar el proyecto a plan **Blaze** (pago por uso), sin cambio de esquema ni de código — el modelo de subcolección por tenant ya es el de producción, solo cambia el billing (ver RNF-ESC-001) |
 | Cold start de Cloud Run afecta UX en horario pico | Configurar `min_instances = 1` para el servicio backend (deja de ser 100% $0 pero sigue siendo bajo costo) |
 | > 300 emails/día reales | Subir de tier en Brevo/SendGrid |
 | Negocio piloto pide recordatorios por WhatsApp | Implementar RF-NOT-006 fase SMS/WhatsApp (Twilio u similar), con costo variable asumido explícitamente por el negocio o el plan comercial de Agendix |

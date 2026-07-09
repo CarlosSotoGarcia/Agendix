@@ -4,7 +4,7 @@
 
 Este directorio contiene la arquitectura base de **Agendix**, producto Novex para que negocios de servicios (barberías, spas, consultorios, estudios) gestionen su agenda: catálogo de servicios, disponibilidad de staff, reservas de clientes y recordatorios automáticos.
 
-La arquitectura técnica (multi-tenancy, capas, stack, convenciones) se extrajo de [Zity](../../zity/docs/01-arquitectura.md) porque ambos productos comparten la misma base Novex (FastAPI + Motor + Angular + GCP). El **dominio** es distinto y se adaptó desde cero: Zity controla accesos físicos con QR; Agendix administra citas y disponibilidad.
+La arquitectura técnica (multi-tenancy, capas, RBAC, convenciones, Angular) se extrajo de [Zity](../../zity/docs/01-arquitectura.md) porque ambos productos comparten la misma base Novex. El **dominio** es distinto y se adaptó desde cero: Zity controla accesos físicos con QR; Agendix administra citas y disponibilidad. La **persistencia también diverge deliberadamente**: Zity usa MongoDB/Motor, Agendix usa **Cloud Firestore** (Native Mode) por estar 100% desplegado en GCP desde el día uno — ver justificación completa en [01-arquitectura.md](./01-arquitectura.md).
 
 ---
 
@@ -27,12 +27,12 @@ La arquitectura técnica (multi-tenancy, capas, stack, convenciones) se extrajo 
 ## Stack Tecnológico
 
 ```
-Backend       : FastAPI 0.115+ · Python 3.11+ · PyJWT · Motor (async MongoDB driver)
-Base de Datos : MongoDB 7+ (estrategia single-DB + tenant_id por documento)
+Backend       : FastAPI 0.115+ · Python 3.11+ · PyJWT · google-cloud-firestore (Admin SDK, async)
+Base de Datos : Cloud Firestore Native Mode (estrategia subcolección-por-tenant, mismo proyecto GCP)
 Frontend      : Angular 20 · PrimeNG (Aura) · TypeScript 5+
-Auth          : JWT (access token 15 min + refresh token 7 días)
+Auth          : JWT (access token 15 min + refresh token 7 días), login por slug de negocio
 Notificaciones: Email (SMTP, fire-and-forget) — SMS/WhatsApp evaluado en fase 2
-Infra         : Docker Compose (dev) · GCP Cloud Run + Firebase Hosting (prod)
+Infra         : Docker Compose + Firestore Emulator (dev) · GCP Cloud Run + Firebase Hosting (prod)
 ```
 
 ---
@@ -52,7 +52,7 @@ Infra         : Docker Compose (dev) · GCP Cloud Run + Firebase Hosting (prod)
 
 (Idénticas a Zity, para mantener consistencia entre productos Novex)
 
-- Colecciones MongoDB: `snake_case` (ej. `appointments`)
+- Colecciones/subcolecciones Firestore: `snake_case` (ej. `appointments`)
 - Endpoints REST: `kebab-case` (ej. `/appointments/{id}/cancel`)
 - Componentes Angular: `PascalCase` (ej. `BookingCalendarComponent`)
 - Variables de entorno: `SCREAMING_SNAKE_CASE` (ej. `JWT_SECRET_KEY`)
@@ -63,7 +63,7 @@ Infra         : Docker Compose (dev) · GCP Cloud Run + Firebase Hosting (prod)
 
 Fases redefinidas siguiendo la arquitectura de bajo costo de [07-plan-implementacion.md](./07-plan-implementacion.md) (stack ≈ $0/mes hasta que el tráfico real dispare un trigger de upgrade):
 
-- **Fase 0:** Bootstrap de infraestructura (Atlas M0, Cloud Run, Firebase Hosting) y repos ← *en curso*
+- **Fase 0:** Bootstrap de infraestructura (Cloud Firestore, Cloud Run, Firebase Hosting — un solo proyecto GCP) y repos ← *en curso*
 - Fase 1 (MVP): Catálogo de servicios + staff + reserva de citas (pública y privada) + validación de solapamiento
 - Fase 2: Notificaciones de bajo costo (email SMTP gratuito + recordatorios vía Cloud Scheduler)
 - Fase 3: CRM básico (historial, notas privadas) + Sistema de Recompensas y Fidelización

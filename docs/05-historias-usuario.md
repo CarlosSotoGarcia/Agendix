@@ -85,7 +85,7 @@
 *(RF-TEN-001)*
 
 **Checklist de aceptación:**
-- [ ] El sistema rechaza slugs duplicados (índice único en `tenants.slug`).
+- [ ] El sistema rechaza slugs duplicados (escritura condicional sobre `tenant_slugs/{slug}` — falla si el documento ya existe).
 - [ ] El negocio queda operativo de inmediato: su `business_admin` puede loguearse y configurar servicios/staff.
 - [ ] El slug queda reflejado en la URL pública `agendix.app/:slug/reservar`.
 

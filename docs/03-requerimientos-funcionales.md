@@ -29,7 +29,7 @@ Convención de IDs: `RF-<MÓDULO>-<NNN>`. Módulos: `AGE` (Agendamiento), `TEN` 
 
 | ID | Requerimiento | Actor |
 |---|---|---|
-| RF-AGE-020 | El sistema debe exponer una página pública por `tenant_slug` (`/:tenantSlug/reservar`) donde un visitante sin cuenta consulta disponibilidad real (servicio → staff → slot) y confirma una reserva, resolviendo el tenant vía `TenantRepository.find_by_slug()` (ver [01-arquitectura.md §1.2.1](./01-arquitectura.md#121-diferencia-clave-con-zity-página-pública-de-reservas)). | client (guest) |
+| RF-AGE-020 | El sistema debe exponer una página pública por `tenant_slug` (`/:tenantSlug/reservar`) donde un visitante sin cuenta consulta disponibilidad real (servicio → staff → slot) y confirma una reserva, resolviendo el tenant vía `TenantRepository.find_id_by_slug()` (ver [01-arquitectura.md §1.2.1](./01-arquitectura.md#121-resolución-de-slug--tenant_id-página-pública-de-reservas)). | client (guest) |
 | RF-AGE-021 | Al confirmar una reserva pública, el sistema debe crear o reutilizar (por email/teléfono) un registro `client` mínimo, sin exigir contraseña en el MVP. | client (guest) |
 | RF-AGE-022 | Un `business_admin` o `staff` debe poder crear una cita manualmente "a nombre de" un cliente existente o nuevo (reserva privada, ej. tomada por teléfono). | staff, business_admin |
 | RF-AGE-023 | Antes de persistir cualquier cita (pública o privada), el sistema debe validar disponibilidad vía `AvailabilityService.is_slot_available()` y rechazar con `409 Conflict` si el slot ya no está libre — esta regla vive únicamente en el Service, nunca en el router ni en queries sueltas (ver [01-arquitectura.md §1.4](./01-arquitectura.md#14-arquitectura-en-capas-router--service--repository)). | sistema |
@@ -64,7 +64,7 @@ Convención de IDs: `RF-<MÓDULO>-<NNN>`. Módulos: `AGE` (Agendamiento), `TEN` 
 
 | ID | Requerimiento | Actor |
 |---|---|---|
-| RF-TEN-001 | El sistema debe permitir a un `super_admin` dar de alta un nuevo `tenant` con `slug` único (validado contra `db.tenants` índice único, ver [01-arquitectura.md §1.3](./01-arquitectura.md#13-índices-mongodb-por-colección)), nombre comercial, vertical (barbería/consultorio/gimnasio/estética) y datos de contacto. | super_admin |
+| RF-TEN-001 | El sistema debe permitir a un `super_admin` dar de alta un nuevo `tenant` con `slug` único (validado vía escritura condicional del documento `tenant_slugs/{slug}`, ver [01-arquitectura.md §1.2.1](./01-arquitectura.md#121-resolución-de-slug--tenant_id-página-pública-de-reservas)), nombre comercial, vertical (barbería/consultorio/gimnasio/estética) y datos de contacto. | super_admin |
 | RF-TEN-002 | El `slug` debe ser editable solo por `super_admin` (cambiarlo rompe enlaces públicos ya compartidos por el negocio), con advertencia explícita en UI. | super_admin |
 | RF-TEN-003 | El sistema debe permitir a un `super_admin` suspender un `tenant` (ej. por impago), bloqueando el acceso de `business_admin`/`staff`/`client` de ese tenant sin borrar datos. | super_admin |
 | RF-TEN-010 | El `business_admin` debe poder crear, editar y desactivar `services` con: nombre, descripción, duración (minutos), precio, categoría y estado (activo/inactivo). | business_admin |

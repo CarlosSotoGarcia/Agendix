@@ -1,6 +1,6 @@
 # 04 — Requerimientos No Funcionales (RNF)
 
-> Todos los RNF asumen la infraestructura ya decidida en [01-arquitectura.md](./01-arquitectura.md): FastAPI + Motor sobre MongoDB single-DB, Angular 20 + PrimeNG, despliegue en GCP (Cloud Run + Firebase Hosting) vía `release.py`.
+> Todos los RNF asumen la infraestructura ya decidida en [01-arquitectura.md](./01-arquitectura.md): FastAPI sobre Cloud Firestore Native Mode (Admin SDK, subcolección por tenant), Angular 20 + PrimeNG, despliegue en GCP (Cloud Run + Firebase Hosting) vía `release.py`.
 
 ---
 
@@ -8,13 +8,14 @@
 
 | ID | Requerimiento |
 |---|---|
-| RNF-PERF-001 | El cálculo de disponibilidad (`AvailabilityService.is_slot_available`) debe resolver en **< 200 ms p95** apoyándose en el índice compuesto `(tenant_id, staff_id, start_time)` sobre `appointments`, el más sensible según [01-arquitectura.md §1.3](./01-arquitectura.md#13-índices-mongodb-por-colección). |
+| RNF-PERF-001 | El cálculo de disponibilidad (`AvailabilityService.is_slot_available`) debe resolver en **< 200 ms p95** apoyándose en el índice compuesto `(staff_id, status, start_time)` sobre la subcolección `appointments`, el más sensible según [01-arquitectura.md §1.3](./01-arquitectura.md#índices-compuestos-requeridos-firestoreindexesjson). Al correr dentro de una transacción Firestore (ver [01-arquitectura.md §1.4](./01-arquitectura.md#ejemplo-de-flujo-post-appointments-reservar-una-cita)), la transacción debe mantenerse acotada a esas lecturas mínimas para no aumentar la probabilidad de reintento por contención. |
 | RNF-PERF-002 | El endpoint público `GET /public/{tenant_slug}/availability` debe responder en **< 500 ms p95** bajo carga normal, dado que es la puerta de entrada de clientes anónimos sensibles a la fricción. |
 | RNF-PERF-003 | El envío de notificaciones (confirmación, recordatorio) es **fire-and-forget** (RF-NOT-001/007) y **no debe** contarse dentro del SLA de latencia del endpoint que lo origina. |
-| RNF-ESC-001 | La estrategia single-DB + `tenant_id` (ver [01-arquitectura.md §1.1](./01-arquitectura.md#11-decisión-de-arquitectura-de-tenancy)) debe soportar crecimiento horizontal de tenants sin cambio de esquema; la migración a DB-per-tenant para un cliente enterprise específico debe seguir siendo viable sin romper el modelo de datos. |
-| RNF-ESC-002 | El backend (Cloud Run) debe escalar horizontalmente sin estado compartido en proceso — cualquier estado de sesión vive en JWT o en MongoDB, nunca en memoria del contenedor. |
+| RNF-ESC-001 | La estrategia subcolección-por-tenant (ver [01-arquitectura.md §1.1](./01-arquitectura.md#11-decisión-de-arquitectura-de-tenancy)) debe soportar crecimiento horizontal de tenants sin cambio de esquema; Firestore ya reparte automáticamente la carga entre tenants sin partición manual, y el paso de plan Spark (gratuito) a Blaze (pago por uso) al escalar no requiere migración de datos ni de código. |
+| RNF-ESC-002 | El backend (Cloud Run) debe escalar horizontalmente sin estado compartido en proceso — cualquier estado de sesión vive en JWT o en Firestore, nunca en memoria del contenedor. |
 | RNF-DISP-001 | Disponibilidad objetivo: **99.5%** mensual para el backend en producción (excluye ventanas de mantenimiento anunciadas), verificable vía `python release.py status`. |
-| RNF-DISP-002 | Un fallo del proveedor de notificaciones (SMTP/SMS) no debe degradar la disponibilidad del flujo de reserva — la creación de la cita se confirma en base de datos antes de intentar notificar (orden ya reflejado en el ejemplo de [01-arquitectura.md §1.4](./01-arquitectura.md#ejemplo-de-flujo-post-appointments-reservar-una-cita)). |
+| RNF-DISP-002 | Un fallo del proveedor de notificaciones (SMTP/SMS) no debe degradar la disponibilidad del flujo de reserva — la transacción Firestore que crea la cita se confirma antes de intentar notificar (orden ya reflejado en el ejemplo de [01-arquitectura.md §1.4](./01-arquitectura.md#ejemplo-de-flujo-post-appointments-reservar-una-cita)). |
+| RNF-DISP-003 | El sistema debe mantenerse operativo aun si se agota transitoriamente algún cupo diario gratuito de Firestore (lecturas/escrituras) — en ese escenario el error debe comunicarse como indisponibilidad temporal explícita, nunca como un fallo silencioso de datos, y debe disparar la alerta de presupuesto de [07-plan-implementacion.md §7.3 Fase 0](./07-plan-implementacion.md#fase-0--bootstrap-de-infraestructura-y-repos-05-1-semana). |
 
 ---
 
@@ -24,7 +25,7 @@
 |---|---|
 | RNF-SEC-001 | Toda contraseña se almacena con hash `bcrypt` (nunca en texto plano ni con hash reversible), consistente con `core/security.py` de la arquitectura base. |
 | RNF-SEC-002 | Autenticación vía JWT de acceso (15 min) + refresh token (7 días); ningún endpoint fuera de `BYPASS_PATHS`/`BYPASS_PREFIXES` debe aceptar requests sin token válido o sin `X-Tenant-ID` (ver `TenantMiddleware`, [01-arquitectura.md §1.2](./01-arquitectura.md#12-identificación-del-tenant-en-fastapi)). |
-| RNF-SEC-003 | **Aislamiento de datos entre tenants**: toda query de `repositories/` debe incluir `tenant_id` en el filtro — no debe existir ningún path de código que lea/escriba un documento de un tenant sin verificar pertenencia (ver responsabilidad de capa en [01-arquitectura.md §1.4](./01-arquitectura.md#responsabilidad-de-cada-capa)). Se recomienda test de regresión dedicado (`test_multitenancy.py`, ya listado en la estructura de `tests/`) que intente fugas cross-tenant y falle el build si alguna pasa. |
+| RNF-SEC-003 | **Aislamiento de datos entre tenants**: toda operación de `repositories/` debe construir su referencia de documento/colección bajo la ruta `tenants/{tenant_id}/...` del tenant correcto — no debe existir ningún path de código que lea/escriba una subcolección de un tenant distinto al resuelto por `TenantMiddleware` (ver responsabilidad de capa en [01-arquitectura.md §1.4](./01-arquitectura.md#responsabilidad-de-cada-capa)). El aislamiento por ruta de documento es una garantía más fuerte que un filtro de campo (no hay query cross-tenant posible aunque el código lo intente), pero sigue dependiendo de que el Repository nunca reciba un `tenant_id` de una fuente no confiable. Se recomienda test de regresión dedicado (`test_multitenancy.py`, ya listado en la estructura de `tests/`) que intente fugas cross-tenant y falle el build si alguna pasa. |
 | RNF-SEC-004 | RBAC estricto por rol (`require_role()`): un `client` nunca debe poder invocar endpoints de `business_admin`/`staff` (gestión de servicios, staff, catálogo de recompensas, notas privadas), verificado a nivel de router (Capa 1), no solo ocultado en el frontend. |
 | RNF-SEC-005 | Las **notas privadas del proveedor** (RF-CRM-004/005) deben ser inaccesibles para el rol `client` en cualquier endpoint, incluidos los de exportación (RF-CRM-008), que deben excluirlas explícitamente. |
 | RNF-SEC-006 | Para negocios de vertical "consultorio" con notas marcadas como **sensibles** (RF-CRM-006, datos de salud), el sistema debe: (a) restringir su lectura al `staff` que la creó y al `business_admin` propietario del tenant — no a todo `staff` del negocio por defecto; (b) registrar en log de auditoría cada acceso de lectura a una nota sensible (quién, cuándo). Este control es más estricto que el RBAC genérico de RNF-SEC-004 y responde al mayor estándar de confidencialidad esperado para datos clínicos, aun cuando el sistema no busca certificación HIPAA formal en el MVP. |
@@ -50,5 +51,5 @@
 | ID | Requerimiento |
 |---|---|
 | RNF-OBS-001 | Todo cambio de estado de cita (RF-AGE-034) y todo acceso a nota sensible (RNF-SEC-006) deben quedar en un log auditable, independiente de `notifications_log`. |
-| RNF-OBS-002 | El endpoint `/health` debe reportar estado de conexión a MongoDB, consumido por `python release.py status`. |
+| RNF-OBS-002 | El endpoint `/health` debe reportar estado de conexión a Firestore (lectura trivial de verificación), consumido por `python release.py status`. |
 | RNF-OBS-003 | La cobertura de tests debe incluir explícitamente casos de solapamiento de horario y límites de agenda (`test_availability.py`) y fuga cross-tenant (`test_multitenancy.py`), ya previstos en la estructura de directorios de [01-arquitectura.md §1.6](./01-arquitectura.md#16-estructura-de-directorios-del-backend). |
